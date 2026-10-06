@@ -1,0 +1,485 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>レイヤー分解ツール｜Sakuya</title>
+<style>
+  :root{
+    --bg:#f6f4f1; --panel:#fff; --ink:#2b2622; --sub:#7a716a; --line:#e3ddd6;
+    --accent:#b5485d; --accent-ink:#fff; --chk:#e9e4de;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{ --bg:#1b1917; --panel:#26231f; --ink:#f0ebe5; --sub:#a39a91; --line:#3a3530; --accent:#d9677c; --chk:#33302c; }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.6 -apple-system,"Hiragino Sans","Yu Gothic",sans-serif}
+  header{padding:14px 16px;border-bottom:1px solid var(--line);background:var(--panel)}
+  header h1{margin:0;font-size:17px}
+  header p{margin:2px 0 0;color:var(--sub);font-size:12.5px}
+  main{display:grid;grid-template-columns:1fr 320px;gap:14px;padding:14px;max-width:1280px;margin:0 auto}
+  @media (max-width:860px){ main{grid-template-columns:1fr;padding:12px 16px} }
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px}
+  h2{margin:0 0 8px;font-size:13px;color:var(--sub);font-weight:600;letter-spacing:.04em}
+  button,label.btn{font:inherit;border:1px solid var(--line);background:var(--panel);color:var(--ink);border-radius:8px;padding:8px 12px;cursor:pointer}
+  button.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  .opts{display:flex;flex-direction:column;gap:4px;margin:10px 0;font-size:13.5px}
+  #drop{border:2px dashed var(--line);border-radius:10px;padding:28px 12px;text-align:center;color:var(--sub);cursor:pointer}
+  #drop.over{border-color:var(--accent);color:var(--accent)}
+  #stage{position:relative;overflow:auto;border-radius:8px;border:1px solid var(--line);
+    background:conic-gradient(var(--chk) 25%,transparent 0 50%,var(--chk) 0 75%,transparent 0) 0 0/20px 20px;max-height:76vh}
+  #cv{display:block;max-width:100%;height:auto;touch-action:none;cursor:grab}
+  #status{font-size:13px;color:var(--sub);margin-top:8px;min-height:20px}
+  #bar{height:4px;background:var(--line);border-radius:2px;overflow:hidden;margin-top:6px;display:none}
+  #bar i{display:block;height:100%;width:0;background:var(--accent);transition:width .2s}
+  #layers{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+  #layers li{display:flex;align-items:center;gap:8px;border:1px solid var(--line);border-radius:8px;padding:6px 8px}
+  #layers li.sel{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
+  #layers canvas{width:36px;height:36px;object-fit:contain;border-radius:4px;background:var(--chk);flex:none}
+  #layers .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
+  #layers button{padding:2px 8px;font-size:12px}
+  #edit{display:none;margin-top:10px}
+  #edit textarea{width:100%;min-height:60px;font:inherit;border:1px solid var(--line);border-radius:8px;padding:6px;background:var(--bg);color:var(--ink)}
+  #edit .grid{display:grid;grid-template-columns:auto 1fr;gap:6px 10px;align-items:center;margin-top:6px;font-size:13px}
+  small{color:var(--sub)}
+</style>
+</head>
+<body>
+<header>
+  <h1>レイヤー分解ツール</h1>
+  <p>画像を「背景・被写体・文字」に分けて、ブラウザ上で動かしたり書き換えたりできます。画像は外部に送信されません（初回のみAIモデルをダウンロード）。</p>
+</header>
+
+<main>
+  <section>
+    <div class="card" id="loadCard">
+      <div id="drop">ここに画像をドロップ、またはクリックして選択<br><small>JPG / PNG / WebP</small></div>
+      <input type="file" id="file" accept="image/*" hidden>
+      <div class="opts">
+        <label><input type="checkbox" id="optSubject" checked> 被写体を切り抜く（初回は約40MBのモデル取得）</label>
+        <label><input type="checkbox" id="optText" checked> 文字を認識してレイヤー化（日本語＋英語）</label>
+      </div>
+      <div class="row">
+        <button class="primary" id="run" disabled>レイヤーに分解する</button>
+      </div>
+      <div id="bar"><i></i></div>
+      <div id="status"></div>
+    </div>
+
+    <div class="card" style="margin-top:14px">
+      <h2>プレビュー（ドラッグでレイヤーを移動）</h2>
+      <div id="stage"><canvas id="cv" width="10" height="10"></canvas></div>
+    </div>
+  </section>
+
+  <aside>
+    <div class="card">
+      <h2>レイヤー（上が前面）</h2>
+      <ul id="layers"></ul>
+      <div id="edit">
+        <textarea id="txt"></textarea>
+        <div class="grid">
+          <span>文字色</span><input type="color" id="col">
+          <span>サイズ</span><input type="range" id="size" min="8" max="400">
+          <span>フォント</span>
+          <select id="font">
+            <option value="sans">ゴシック</option>
+            <option value="serif">明朝</option>
+          </select>
+        </div>
+      </div>
+    </div>
+    <div class="card" style="margin-top:14px">
+      <h2>書き出し</h2>
+      <div class="row">
+        <button id="exZip" disabled>PNG一式 (ZIP)</button>
+        <button id="exPsd" disabled>PSD</button>
+        <button id="exPng" disabled>合成PNG</button>
+      </div>
+      <p><small>PSDはPhotopeaやPhotoshopで開けます。文字レイヤーは画像として入ります。</small></p>
+    </div>
+  </aside>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/ag-psd@31.0.2/dist/bundle.js"></script>
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const cv = $('cv'), ctx = cv.getContext('2d');
+  const FONTS = {
+    sans: '"Hiragino Sans","Yu Gothic","Noto Sans JP",sans-serif',
+    serif: '"Hiragino Mincho ProN","Yu Mincho","Noto Serif JP",serif'
+  };
+
+  let srcImg = null;      // ImageBitmap/HTMLImageElement
+  let W = 0, H = 0;
+  let layers = [];        // 背面 → 前面の順
+  let selId = null;
+  let uid = 1;
+
+  /* ---------- UI helpers ---------- */
+  const status = (t) => { $('status').textContent = t; };
+  const progress = (p) => {
+    $('bar').style.display = p == null ? 'none' : 'block';
+    if (p != null) $('bar').firstElementChild.style.width = Math.round(p * 100) + '%';
+  };
+  const newCanvas = (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; };
+
+  /* ---------- 画像読み込み ---------- */
+  async function loadFile(f) {
+    if (!f || !f.type.startsWith('image/')) return;
+    const url = URL.createObjectURL(f);
+    const img = new Image();
+    img.src = url;
+    await img.decode();
+    // 処理が重くなりすぎないよう長辺2000pxに制限
+    const k = Math.min(1, 2000 / Math.max(img.naturalWidth, img.naturalHeight));
+    W = Math.round(img.naturalWidth * k); H = Math.round(img.naturalHeight * k);
+    const base = newCanvas(W, H);
+    base.getContext('2d').drawImage(img, 0, 0, W, H);
+    srcImg = base;
+    layers = [{ id: uid++, type: 'raster', name: '元画像', canvas: base, x: 0, y: 0, visible: true }];
+    selId = null;
+    cv.width = W; cv.height = H;
+    $('run').disabled = false;
+    setExports(true);
+    refresh();
+    status(`${W}×${H}px を読み込みました。「レイヤーに分解する」を押してください。`);
+  }
+
+  const drop = $('drop');
+  drop.onclick = () => $('file').click();
+  $('file').onchange = e => loadFile(e.target.files[0]);
+  drop.ondragover = e => { e.preventDefault(); drop.classList.add('over'); };
+  drop.ondragleave = () => drop.classList.remove('over');
+  drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); loadFile(e.dataTransfer.files[0]); };
+
+  /* ---------- 描画 ---------- */
+  function drawText(c, L, ox = 0, oy = 0) {
+    c.save();
+    c.font = `${L.size}px ${FONTS[L.font]}`;
+    c.fillStyle = L.color;
+    c.textBaseline = 'top';
+    const lines = L.text.split('\n');
+    lines.forEach((ln, i) => c.fillText(ln, L.x - ox, L.y - oy + i * L.size * 1.15));
+    c.restore();
+  }
+  function textBox(L) {
+    const t = newCanvas(1, 1).getContext('2d');
+    t.font = `${L.size}px ${FONTS[L.font]}`;
+    const lines = L.text.split('\n');
+    const w = Math.max(...lines.map(s => t.measureText(s).width), 1);
+    return { x: L.x, y: L.y, w: Math.ceil(w), h: Math.ceil(lines.length * L.size * 1.15) };
+  }
+  function renderLayer(L, c) {
+    if (L.type === 'text') drawText(c, L);
+    else c.drawImage(L.canvas, L.x, L.y);
+  }
+  function refresh() {
+    ctx.clearRect(0, 0, W, H);
+    for (const L of layers) if (L.visible) renderLayer(L, ctx);
+    const S = layers.find(l => l.id === selId);
+    if (S && S.name !== '元画像' && S.name !== '背景') {
+      const b = bounds(S);
+      ctx.save(); ctx.strokeStyle = '#b5485d'; ctx.lineWidth = Math.max(2, W / 500);
+      ctx.setLineDash([8, 6]); ctx.strokeRect(b.x, b.y, b.w, b.h); ctx.restore();
+    }
+    renderList();
+  }
+  function bounds(L) {
+    if (L.type === 'text') return textBox(L);
+    return { x: L.x, y: L.y, w: L.canvas.width, h: L.canvas.height };
+  }
+  function layerToCanvas(L) {
+    const b = bounds(L);
+    const c = newCanvas(Math.max(1, b.w), Math.max(1, b.h));
+    const g = c.getContext('2d');
+    if (L.type === 'text') drawText(g, L, b.x, b.y); else g.drawImage(L.canvas, 0, 0);
+    return { canvas: c, x: b.x, y: b.y };
+  }
+
+  /* ---------- レイヤー一覧 ---------- */
+  function renderList() {
+    const ul = $('layers'); ul.innerHTML = '';
+    [...layers].reverse().forEach(L => {
+      const li = document.createElement('li');
+      if (L.id === selId) li.className = 'sel';
+      const th = newCanvas(72, 72);
+      const t = layerToCanvas(L).canvas;
+      const k = Math.min(72 / t.width, 72 / t.height, 1);
+      th.getContext('2d').drawImage(t, 0, 0, t.width * k, t.height * k);
+      li.appendChild(th);
+      const nm = document.createElement('span'); nm.className = 'nm';
+      nm.textContent = L.type === 'text' ? L.text.replace(/\n/g, ' ') : L.name; li.appendChild(nm);
+      const eye = document.createElement('button'); eye.textContent = L.visible ? '👁' : '—';
+      eye.onclick = e => { e.stopPropagation(); L.visible = !L.visible; refresh(); };
+      li.appendChild(eye);
+      if (L.type !== 'raster' || layers.length > 1) {
+        const del = document.createElement('button'); del.textContent = '✕';
+        del.onclick = e => { e.stopPropagation(); layers = layers.filter(x => x !== L); if (selId === L.id) selId = null; refresh(); };
+        li.appendChild(del);
+      }
+      li.onclick = () => { selId = L.id; syncEdit(); refresh(); };
+      ul.appendChild(li);
+    });
+    syncEdit(true);
+  }
+  function syncEdit(soft) {
+    const L = layers.find(l => l.id === selId);
+    const ed = $('edit');
+    if (!L || L.type !== 'text') { ed.style.display = 'none'; return; }
+    ed.style.display = 'block';
+    if (soft && document.activeElement && ed.contains(document.activeElement)) return;
+    $('txt').value = L.text; $('col').value = L.color; $('size').value = L.size; $('font').value = L.font;
+  }
+  const withSel = fn => () => { const L = layers.find(l => l.id === selId); if (L && L.type === 'text') { fn(L); refresh(); } };
+  $('txt').oninput = withSel(L => { L.text = $('txt').value || ' '; });
+  $('col').oninput = withSel(L => { L.color = $('col').value; });
+  $('size').oninput = withSel(L => { L.size = +$('size').value; });
+  $('font').onchange = withSel(L => { L.font = $('font').value; });
+
+  /* ---------- ドラッグ移動 ---------- */
+  let drag = null;
+  const pt = e => {
+    const r = cv.getBoundingClientRect();
+    return { x: (e.clientX - r.left) * W / r.width, y: (e.clientY - r.top) * H / r.height };
+  };
+  function hit(p) {
+    for (let i = layers.length - 1; i >= 0; i--) {
+      const L = layers[i]; if (!L.visible) continue;
+      const b = bounds(L);
+      if (p.x < b.x || p.y < b.y || p.x >= b.x + b.w || p.y >= b.y + b.h) continue;
+      if (L.type === 'text') return L;
+      const a = L.canvas.getContext('2d').getImageData(Math.floor(p.x - L.x), Math.floor(p.y - L.y), 1, 1).data[3];
+      if (a > 20) return L;
+    }
+    return null;
+  }
+  cv.addEventListener('pointerdown', e => {
+    if (!srcImg) return;
+    const p = pt(e), L = hit(p);
+    if (!L) { selId = null; refresh(); return; }
+    selId = L.id; drag = { L, dx: p.x - L.x, dy: p.y - L.y };
+    cv.setPointerCapture(e.pointerId); cv.style.cursor = 'grabbing';
+    syncEdit(); refresh();
+  });
+  cv.addEventListener('pointermove', e => {
+    if (!drag) return;
+    const p = pt(e); drag.L.x = Math.round(p.x - drag.dx); drag.L.y = Math.round(p.y - drag.dy); refresh();
+  });
+  const endDrag = () => { drag = null; cv.style.cursor = 'grab'; };
+  cv.addEventListener('pointerup', endDrag); cv.addEventListener('pointercancel', endDrag);
+
+  /* ---------- 穴埋め（インペインティング）: 周囲の色を拡散させて埋める ---------- */
+  function inpaint(src, mask) {
+    const w = src.width, h = src.height;
+    const s = Math.max(1, Math.ceil(Math.max(w, h) / 320));
+    const sw = Math.max(1, Math.round(w / s)), sh = Math.max(1, Math.round(h / s));
+    const small = newCanvas(sw, sh); const sg = small.getContext('2d');
+    sg.drawImage(src, 0, 0, sw, sh);
+    const px = sg.getImageData(0, 0, sw, sh).data;
+    // 縮小マスク（1つでも対象なら対象）
+    const m = new Uint8Array(sw * sh);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++)
+      if (mask[y * w + x]) m[Math.min(sh - 1, (y / s) | 0) * sw + Math.min(sw - 1, (x / s) | 0)] = 1;
+    const ch = [new Float32Array(sw * sh), new Float32Array(sw * sh), new Float32Array(sw * sh)];
+    let sum = [0, 0, 0], n = 0;
+    for (let i = 0; i < sw * sh; i++) if (!m[i]) { for (let c = 0; c < 3; c++) sum[c] += px[i * 4 + c]; n++; }
+    for (let i = 0; i < sw * sh; i++) for (let c = 0; c < 3; c++)
+      ch[c][i] = m[i] ? (n ? sum[c] / n : 128) : px[i * 4 + c];
+    const idx = []; for (let i = 0; i < sw * sh; i++) if (m[i]) idx.push(i);
+    for (let it = 0; it < 400 && idx.length; it++) {
+      for (let c = 0; c < 3; c++) {
+        const a = ch[c];
+        for (const i of idx) {
+          const x = i % sw, y = (i / sw) | 0;
+          a[i] = (a[x > 0 ? i - 1 : i] + a[x < sw - 1 ? i + 1 : i] + a[y > 0 ? i - sw : i] + a[y < sh - 1 ? i + sw : i]) / 4;
+        }
+      }
+    }
+    const out = new ImageData(sw, sh);
+    for (let i = 0; i < sw * sh; i++) {
+      out.data[i * 4] = ch[0][i]; out.data[i * 4 + 1] = ch[1][i]; out.data[i * 4 + 2] = ch[2][i]; out.data[i * 4 + 3] = 255;
+    }
+    sg.putImageData(out, 0, 0);
+    // 元サイズに拡大し、マスク部分だけ差し替え
+    const big = newCanvas(w, h); const bg = big.getContext('2d');
+    bg.imageSmoothingQuality = 'high'; bg.drawImage(small, 0, 0, w, h);
+    const bd = bg.getImageData(0, 0, w, h);
+    const res = src.getContext('2d').getImageData(0, 0, w, h);
+    for (let i = 0; i < w * h; i++) if (mask[i]) {
+      res.data[i * 4] = bd.data[i * 4]; res.data[i * 4 + 1] = bd.data[i * 4 + 1];
+      res.data[i * 4 + 2] = bd.data[i * 4 + 2]; res.data[i * 4 + 3] = 255;
+    }
+    const o = newCanvas(w, h); o.getContext('2d').putImageData(res, 0, 0);
+    return o;
+  }
+  function dilate(mask, w, h, r) {
+    let cur = mask;
+    for (let k = 0; k < r; k++) {
+      const nx = new Uint8Array(w * h);
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+        const i = y * w + x;
+        nx[i] = cur[i] || (x > 0 && cur[i - 1]) || (x < w - 1 && cur[i + 1]) || (y > 0 && cur[i - w]) || (y < h - 1 && cur[i + w]) ? 1 : 0;
+      }
+      cur = nx;
+    }
+    return cur;
+  }
+
+  /* ---------- 文字の色推定 ---------- */
+  function estimateColors(c, b) {
+    const g = c.getContext('2d');
+    const x0 = Math.max(0, b.x0), y0 = Math.max(0, b.y0);
+    const x1 = Math.min(c.width, b.x1), y1 = Math.min(c.height, b.y1);
+    const d = g.getImageData(x0, y0, Math.max(1, x1 - x0), Math.max(1, y1 - y0));
+    const w = d.width, h = d.height;
+    // 背景色 = 枠の外周の平均
+    let bs = [0, 0, 0], bn = 0;
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (x < 2 || y < 2 || x >= w - 2 || y >= h - 2) {
+      const i = (y * w + x) * 4; bs[0] += d.data[i]; bs[1] += d.data[i + 1]; bs[2] += d.data[i + 2]; bn++;
+    }
+    const bg = bs.map(v => v / Math.max(1, bn));
+    const arr = [];
+    for (let i = 0; i < w * h; i++) {
+      const dr = d.data[i * 4] - bg[0], dg = d.data[i * 4 + 1] - bg[1], db = d.data[i * 4 + 2] - bg[2];
+      arr.push([dr * dr + dg * dg + db * db, i]);
+    }
+    arr.sort((a, b) => b[0] - a[0]);
+    const top = arr.slice(0, Math.max(1, Math.floor(arr.length * 0.06)));
+    let t = [0, 0, 0];
+    top.forEach(([, i]) => { for (let k = 0; k < 3; k++) t[k] += d.data[i * 4 + k]; });
+    t = t.map(v => Math.round(v / top.length));
+    const hex = v => v.toString(16).padStart(2, '0');
+    return '#' + t.map(hex).join('');
+  }
+
+  /* ---------- 分解本体 ---------- */
+  async function run() {
+    $('run').disabled = true; setExports(false);
+    const useSubject = $('optSubject').checked, useText = $('optText').checked;
+    const orig = srcImg;
+    let bgCanvas = newCanvas(W, H); bgCanvas.getContext('2d').drawImage(orig, 0, 0);
+    const mask = new Uint8Array(W * H);
+    const newLayers = [];
+    try {
+      /* 1) 文字 */
+      if (useText) {
+        status('文字を認識中…（初回は日本語データを取得します）'); progress(0.02);
+        if (!window.Tesseract) throw new Error('Tesseract.js を読み込めませんでした（ネット接続を確認してください）');
+        const worker = await Tesseract.createWorker(['jpn', 'eng'], 1, {
+          logger: m => { if (m.status === 'recognizing text') progress(0.05 + m.progress * 0.35); }
+        });
+        const { data } = await worker.recognize(orig);
+        await worker.terminate();
+        const lines = (data.lines || []).filter(l => l.confidence >= 55 && l.text.trim().length > 0);
+        for (const l of lines) {
+          const b = l.bbox, bh = b.y1 - b.y0;
+          if (bh < 8) continue;
+          const text = l.text.trim().replace(/(?<=[^\x00-\x7F])\s+(?=[^\x00-\x7F])/g, '');
+          const color = estimateColors(orig, b);
+          const size = Math.round(bh * 0.88);
+          newLayers.push({ id: uid++, type: 'text', name: 'text', text, x: b.x0, y: b.y0 - Math.round(bh * 0.06), size, color, font: 'sans', visible: true });
+          const pad = 3;
+          for (let y = Math.max(0, b.y0 - pad); y < Math.min(H, b.y1 + pad); y++)
+            for (let x = Math.max(0, b.x0 - pad); x < Math.min(W, b.x1 + pad); x++) mask[y * W + x] = 1;
+        }
+        status(`文字 ${newLayers.length} 行を検出`);
+      }
+      progress(0.42);
+
+      /* 2) 被写体 */
+      let subject = null;
+      if (useSubject) {
+        status('被写体を切り抜き中…（初回はモデルを取得するため数分かかることがあります）');
+        const mod = await import('https://cdn.jsdelivr.net/npm/@imgly/background-removal@1.5.5/+esm');
+        const blob = await new Promise(r => orig.toBlob(r, 'image/png'));
+        const out = await mod.removeBackground(blob, {
+          progress: (key, cur, total) => { if (total) progress(0.42 + 0.4 * (cur / total)); }
+        });
+        const img = new Image(); img.src = URL.createObjectURL(out); await img.decode();
+        const sc = newCanvas(W, H); sc.getContext('2d').drawImage(img, 0, 0, W, H);
+        // 余白をトリミング
+        const sd = sc.getContext('2d').getImageData(0, 0, W, H).data;
+        let x0 = W, y0 = H, x1 = 0, y1 = 0;
+        const sm = new Uint8Array(W * H);
+        for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (sd[(y * W + x) * 4 + 3] > 100) {
+          sm[y * W + x] = 1; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+        }
+        if (x1 > x0 && y1 > y0) {
+          const tw = x1 - x0 + 1, th = y1 - y0 + 1;
+          const tc = newCanvas(tw, th); tc.getContext('2d').drawImage(sc, x0, y0, tw, th, 0, 0, tw, th);
+          subject = { id: uid++, type: 'raster', name: '被写体', canvas: tc, x: x0, y: y0, visible: true };
+          const dm = dilate(sm, W, H, 3);
+          for (let i = 0; i < W * H; i++) if (dm[i]) mask[i] = 1;
+        }
+      }
+
+      /* 3) 背景の穴埋め */
+      status('背景を穴埋め中…'); progress(0.88);
+      await new Promise(r => setTimeout(r, 30));
+      let any = false; for (let i = 0; i < mask.length; i++) if (mask[i]) { any = true; break; }
+      if (any) bgCanvas = inpaint(bgCanvas, mask);
+
+      const bgLayer = { id: uid++, type: 'raster', name: '背景', canvas: bgCanvas, x: 0, y: 0, visible: true };
+      layers = [bgLayer, ...(subject ? [subject] : []), ...newLayers];
+      selId = null;
+      progress(1); setTimeout(() => progress(null), 600);
+      status(`完了：背景 1 / 被写体 ${subject ? 1 : 0} / 文字 ${newLayers.length}。プレビューをドラッグ、右の一覧で文字を編集できます。`);
+      setExports(true);
+    } catch (err) {
+      console.error(err);
+      progress(null);
+      status('エラー: ' + (err.message || err) + '（オプションを外して再実行もできます）');
+      setExports(true);
+    }
+    $('run').disabled = false;
+    refresh();
+  }
+  $('run').onclick = run;
+
+  /* ---------- 書き出し ---------- */
+  function setExports(on) { ['exZip', 'exPsd', 'exPng'].forEach(id => $(id).disabled = !on || !srcImg); }
+  const dl = (blob, name) => { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000); };
+  const toBlob = c => new Promise(r => c.toBlob(r, 'image/png'));
+  const safe = s => s.replace(/[\\/:*?"<>|\s]+/g, '_').slice(0, 24) || 'layer';
+
+  $('exPng').onclick = async () => {
+    const c = newCanvas(W, H); const g = c.getContext('2d');
+    for (const L of layers) if (L.visible) renderLayer(L, g);
+    dl(await toBlob(c), 'composite.png');
+  };
+  $('exZip').onclick = async () => {
+    if (!window.JSZip) return status('JSZip を読み込めませんでした');
+    const zip = new JSZip(); const meta = { width: W, height: H, layers: [] };
+    for (let i = 0; i < layers.length; i++) {
+      const L = layers[i], r = layerToCanvas(L);
+      const fn = `${String(i).padStart(2, '0')}_${safe(L.type === 'text' ? L.text : L.name)}.png`;
+      zip.file(fn, await toBlob(r.canvas));
+      meta.layers.push({ file: fn, x: r.x, y: r.y, width: r.canvas.width, height: r.canvas.height, visible: L.visible, ...(L.type === 'text' ? { text: L.text, color: L.color, size: L.size } : {}) });
+    }
+    zip.file('layers.json', JSON.stringify(meta, null, 2));
+    dl(await zip.generateAsync({ type: 'blob' }), 'layers.zip');
+  };
+  $('exPsd').onclick = () => {
+    if (!window.agPsd) return status('ag-psd を読み込めませんでした');
+    const children = layers.map(L => {
+      const r = layerToCanvas(L);
+      return { name: L.type === 'text' ? L.text.slice(0, 30) : L.name, canvas: r.canvas, left: r.x, top: r.y, hidden: !L.visible };
+    });
+    const comp = newCanvas(W, H); const g = comp.getContext('2d');
+    for (const L of layers) if (L.visible) renderLayer(L, g);
+    const buf = agPsd.writePsd({ width: W, height: H, children, canvas: comp });
+    dl(new Blob([buf], { type: 'image/vnd.adobe.photoshop' }), 'layers.psd');
+  };
+
+  // テスト用フック
+  window.__layerTool = { inpaint, estimateColors, get layers() { return layers; } };
+})();
+</script>
+</body>
+</html>
