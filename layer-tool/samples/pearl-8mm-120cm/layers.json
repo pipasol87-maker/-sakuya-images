@@ -1,0 +1,78 @@
+{
+  "width": 1080,
+  "height": 1080,
+  "layers": [
+    {
+      "file": "00_bg_woman.png",
+      "x": 0,
+      "y": 0,
+      "width": 1080,
+      "height": 1080,
+      "visible": true
+    },
+    {
+      "file": "01_text_henpin.png",
+      "x": 40,
+      "y": 882,
+      "width": 135,
+      "height": 39,
+      "visible": true
+    },
+    {
+      "file": "02_text_review.png",
+      "x": 44,
+      "y": 926,
+      "width": 332,
+      "height": 30,
+      "visible": true
+    },
+    {
+      "file": "03_text_einen.png",
+      "x": 41,
+      "y": 972,
+      "width": 308,
+      "height": 85,
+      "visible": true
+    },
+    {
+      "file": "04_text_8mm120cm.png",
+      "x": 432,
+      "y": 985,
+      "width": 237,
+      "height": 36,
+      "visible": true
+    },
+    {
+      "file": "05_logo_sakuya.png",
+      "x": 921,
+      "y": 935,
+      "width": 130,
+      "height": 120,
+      "visible": true
+    },
+    {
+      "file": "06_item_earrings.png",
+      "x": 381,
+      "y": 785,
+      "width": 273,
+      "height": 164,
+      "visible": true
+    },
+    {
+      "file": "07_item_box.png",
+      "x": 0,
+      "y": 310,
+      "width": 580,
+      "height": 600,
+      "visible": true
+    },
+    {
+      "file": "08_item_colors.png",
+      "x": 692,
+      "y": 971,
+      "width": 195,
+      "height": 61,
+      "visible": true
+    }
+  ]
+}

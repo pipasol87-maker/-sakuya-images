@@ -69,7 +69,14 @@
     </div>
 
     <div class="card" style="margin-top:14px">
-      <h2>プレビュー（ドラッグでレイヤーを移動）</h2>
+      <h2>プレビュー</h2>
+      <div class="row" id="modes" style="margin-bottom:8px">
+        <button data-m="move" class="primary">移動</button>
+        <button data-m="timg">範囲→文字(画像)</button>
+        <button data-m="ocr">範囲→文字(編集可)</button>
+        <button data-m="cut">範囲→切り抜き</button>
+      </div>
+      <p style="margin:0 0 8px"><small id="modeHelp">レイヤーをドラッグして動かします。</small></p>
       <div id="stage"><canvas id="cv" width="10" height="10"></canvas></div>
     </div>
   </section>
@@ -120,6 +127,8 @@
   let layers = [];        // 背面 → 前面の順
   let selId = null;
   let uid = 1;
+  let mode = 'move';
+  let marq = null;
 
   /* ---------- UI helpers ---------- */
   const status = (t) => { $('status').textContent = t; };
@@ -187,6 +196,10 @@
       const b = bounds(S);
       ctx.save(); ctx.strokeStyle = '#b5485d'; ctx.lineWidth = Math.max(2, W / 500);
       ctx.setLineDash([8, 6]); ctx.strokeRect(b.x, b.y, b.w, b.h); ctx.restore();
+    }
+    if (marq) {
+      ctx.save(); ctx.strokeStyle = '#1e88e5'; ctx.fillStyle = 'rgba(30,136,229,.15)'; ctx.lineWidth = Math.max(2, W / 500);
+      ctx.fillRect(marq.x, marq.y, marq.w, marq.h); ctx.strokeRect(marq.x, marq.y, marq.w, marq.h); ctx.restore();
     }
     renderList();
   }
@@ -261,18 +274,47 @@
   }
   cv.addEventListener('pointerdown', e => {
     if (!srcImg) return;
-    const p = pt(e), L = hit(p);
+    const p = pt(e);
+    if (mode !== 'move') { marq = { sx: p.x, sy: p.y, x: p.x, y: p.y, w: 0, h: 0 }; cv.setPointerCapture(e.pointerId); return; }
+    const L = hit(p);
     if (!L) { selId = null; refresh(); return; }
     selId = L.id; drag = { L, dx: p.x - L.x, dy: p.y - L.y };
     cv.setPointerCapture(e.pointerId); cv.style.cursor = 'grabbing';
     syncEdit(); refresh();
   });
   cv.addEventListener('pointermove', e => {
+    const p = pt(e);
+    if (marq) {
+      marq.x = Math.min(marq.sx, p.x); marq.y = Math.min(marq.sy, p.y);
+      marq.w = Math.abs(p.x - marq.sx); marq.h = Math.abs(p.y - marq.sy); refresh(); return;
+    }
     if (!drag) return;
-    const p = pt(e); drag.L.x = Math.round(p.x - drag.dx); drag.L.y = Math.round(p.y - drag.dy); refresh();
+    drag.L.x = Math.round(p.x - drag.dx); drag.L.y = Math.round(p.y - drag.dy); refresh();
   });
-  const endDrag = () => { drag = null; cv.style.cursor = 'grab'; };
-  cv.addEventListener('pointerup', endDrag); cv.addEventListener('pointercancel', endDrag);
+  const endDrag = () => { drag = null; cv.style.cursor = mode === 'move' ? 'grab' : 'crosshair'; };
+  cv.addEventListener('pointerup', async () => {
+    if (marq) {
+      const r = { x: Math.round(marq.x), y: Math.round(marq.y), w: Math.round(marq.w), h: Math.round(marq.h) };
+      marq = null; refresh();
+      if (r.w > 8 && r.h > 8) await addRegion(mode, r);
+      return;
+    }
+    endDrag();
+  });
+  cv.addEventListener('pointercancel', () => { marq = null; endDrag(); refresh(); });
+
+  const HELP = {
+    move: 'レイヤーをドラッグして動かします。',
+    timg: '文字の周りをドラッグ → 文字だけを透明背景の画像レイヤーとして切り出し、背景は穴埋めします（デザイン文字向け）。',
+    ocr: '1行の文字の周りをドラッグ → 文字認識して編集できるテキストレイヤーにします。',
+    cut: '物の周りをドラッグ → 範囲内の被写体を切り抜いて別レイヤーにします。'
+  };
+  $('modes').onclick = e => {
+    const b = e.target.closest('button'); if (!b) return;
+    mode = b.dataset.m;
+    document.querySelectorAll('#modes button').forEach(x => x.classList.toggle('primary', x === b));
+    $('modeHelp').textContent = HELP[mode]; cv.style.cursor = mode === 'move' ? 'grab' : 'crosshair';
+  };
 
   /* ---------- 穴埋め（インペインティング）: 周囲の色を拡散させて埋める ---------- */
   function inpaint(src, mask) {
@@ -358,6 +400,131 @@
     return '#' + t.map(hex).join('');
   }
 
+  /* ---------- 範囲指定での切り出し ---------- */
+  let imglyMod = null, ocrWorker = null;
+  function ensureBg() {
+    if (layers[0] && layers[0].name === '元画像') {
+      const c = newCanvas(W, H); c.getContext('2d').drawImage(srcImg, 0, 0);
+      layers[0] = { id: layers[0].id, type: 'raster', name: '背景', canvas: c, x: 0, y: 0, visible: true };
+    }
+    return layers[0];
+  }
+  async function getImgly() {
+    if (!imglyMod) imglyMod = await import('https://cdn.jsdelivr.net/npm/@imgly/background-removal@1.5.5/+esm');
+    return imglyMod;
+  }
+  async function getOcr() {
+    if (!window.Tesseract) throw new Error('Tesseract.js を読み込めませんでした');
+    if (!ocrWorker) ocrWorker = await Tesseract.createWorker(['jpn', 'eng'], 1);
+    return ocrWorker;
+  }
+  function rectMask(x, y, w, h, pad) {
+    const m = new Uint8Array(W * H);
+    for (let yy = Math.max(0, y - pad); yy < Math.min(H, y + h + pad); yy++)
+      for (let xx = Math.max(0, x - pad); xx < Math.min(W, x + w + pad); xx++) m[yy * W + xx] = 1;
+    return m;
+  }
+  // 範囲内で「文字っぽい画素」だけを拾う（枠の外周の色との差が大きい画素）
+  function textPixelMask(crop, x0, y0) {
+    const w = crop.width, h = crop.height;
+    const d = crop.getContext('2d').getImageData(0, 0, w, h).data;
+    let r = 0, g = 0, b = 0, n = 0;
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (x < 3 || y < 3 || x >= w - 3 || y >= h - 3) {
+      const i = (y * w + x) * 4; r += d[i]; g += d[i + 1]; b += d[i + 2]; n++;
+    }
+    r /= n; g /= n; b /= n;
+    const local = new Uint8Array(w * h); let cnt = 0;
+    for (let i = 0; i < w * h; i++) {
+      const dd = Math.abs(d[i * 4] - r) + Math.abs(d[i * 4 + 1] - g) + Math.abs(d[i * 4 + 2] - b);
+      if (dd > 70) { local[i] = 1; cnt++; }
+    }
+    const full = new Uint8Array(W * H);
+    if (cnt < w * h * 0.005) { for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) full[(y0 + y) * W + x0 + x] = 1; return full; }
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (local[y * w + x]) full[(y0 + y) * W + x0 + x] = 1;
+    return dilate(full, W, H, 4);
+  }
+  async function addRegion(m, r0) {
+    const x = Math.max(0, r0.x), y = Math.max(0, r0.y);
+    const w = Math.min(W - x, r0.w), h = Math.min(H - y, r0.h);
+    if (w < 4 || h < 4) return;
+    try {
+      const bg = ensureBg();
+      // 切り出し済みの部分を除いた「残りの背景」から切り出す（重なった物を順に外せる）
+      const crop = newCanvas(w, h); crop.getContext('2d').drawImage(bg.canvas, x, y, w, h, 0, 0, w, h);
+      if (m === 'cut') {
+        status('切り抜き中…（初回はモデルを取得します）');
+        const mod = await getImgly();
+        const blob = await new Promise(r => crop.toBlob(r, 'image/png'));
+        const out = await mod.removeBackground(blob);
+        const img = new Image(); img.src = URL.createObjectURL(out); await img.decode();
+        const sc = newCanvas(w, h); sc.getContext('2d').drawImage(img, 0, 0, w, h);
+        const t = trimAlpha(sc);
+        if (!t) return status('被写体が見つかりませんでした');
+        const full = new Uint8Array(W * H);
+        const a = sc.getContext('2d').getImageData(0, 0, w, h).data;
+        for (let yy = 0; yy < h; yy++) for (let xx = 0; xx < w; xx++) if (a[(yy * w + xx) * 4 + 3] > 100) full[(y + yy) * W + x + xx] = 1;
+        bg.canvas = inpaint(bg.canvas, dilate(full, W, H, 3));
+        layers.push({ id: uid++, type: 'raster', name: '切り抜き' + uid, canvas: t.canvas, x: x + t.x, y: y + t.y, visible: true });
+        status('切り抜きレイヤーを追加しました');
+      } else if (m === 'timg') {
+        status('文字を切り出し中…');
+        const mask = textPixelMask(crop, x, y);
+        const before = bg.canvas;
+        const filled = inpaint(before, mask);
+        // 元画像と穴埋め背景の差から、文字の透明度と色を復元
+        const o = crop.getContext('2d').getImageData(0, 0, w, h);
+        const f = filled.getContext('2d').getImageData(x, y, w, h).data;
+        const outc = newCanvas(w, h), od = new ImageData(w, h);
+        for (let i = 0; i < w * h; i++) {
+          const dr = o.data[i * 4] - f[i * 4], dg = o.data[i * 4 + 1] - f[i * 4 + 1], db = o.data[i * 4 + 2] - f[i * 4 + 2];
+          const dmax = Math.max(Math.abs(dr), Math.abs(dg), Math.abs(db));
+          if (dmax < 14 || !mask[(y + ((i / w) | 0)) * W + x + (i % w)]) continue;
+          const a = Math.min(1, (dmax - 8) / 70);
+          od.data[i * 4] = Math.max(0, Math.min(255, f[i * 4] + dr / a));
+          od.data[i * 4 + 1] = Math.max(0, Math.min(255, f[i * 4 + 1] + dg / a));
+          od.data[i * 4 + 2] = Math.max(0, Math.min(255, f[i * 4 + 2] + db / a));
+          od.data[i * 4 + 3] = Math.round(a * 255);
+        }
+        outc.getContext('2d').putImageData(od, 0, 0);
+        const t = trimAlpha(outc);
+        if (!t) return status('文字が見つかりませんでした');
+        bg.canvas = filled;
+        layers.push({ id: uid++, type: 'raster', name: '文字' + uid, canvas: t.canvas, x: x + t.x, y: y + t.y, visible: true });
+        status('文字レイヤー(画像)を追加しました');
+      } else if (m === 'ocr') {
+        status('文字認識中…（初回は日本語データを取得します）');
+        const k = Math.max(1, Math.min(4, 64 / h));
+        const up = newCanvas(Math.round(w * k), Math.round(h * k));
+        const ug = up.getContext('2d'); ug.imageSmoothingQuality = 'high'; ug.drawImage(crop, 0, 0, up.width, up.height);
+        const wk = await getOcr();
+        await wk.setParameters({ tessedit_pageseg_mode: w / h > 3 ? '7' : '6' });
+        const { data } = await wk.recognize(up);
+        const text = data.text.trim().replace(/(?<=[^\x00-\x7F])\s+(?=[^\x00-\x7F])/g, '');
+        if (!text) return status('文字を認識できませんでした');
+        const mask = textPixelMask(crop, x, y);
+        const nLines = Math.max(1, text.split('\n').length);
+        const size = Math.round(h / nLines * 0.88);
+        const color = estimateColors(bg.canvas, { x0: x, y0: y, x1: x + w, y1: y + h });
+        bg.canvas = inpaint(bg.canvas, mask);
+        const L = { id: uid++, type: 'text', name: 'text', text, x, y, size, color, font: 'sans', visible: true };
+        layers.push(L); selId = L.id;
+        status('テキストレイヤーを追加しました。右の一覧で内容を直せます。');
+      }
+      refresh(); setExports(true);
+    } catch (err) { console.error(err); status('エラー: ' + (err.message || err)); }
+  }
+  function trimAlpha(c) {
+    const w = c.width, h = c.height, d = c.getContext('2d').getImageData(0, 0, w, h).data;
+    let x0 = w, y0 = h, x1 = -1, y1 = -1;
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (d[(y * w + x) * 4 + 3] > 10) {
+      if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+    }
+    if (x1 < x0) return null;
+    const tw = x1 - x0 + 1, th = y1 - y0 + 1, t = newCanvas(tw, th);
+    t.getContext('2d').drawImage(c, x0, y0, tw, th, 0, 0, tw, th);
+    return { canvas: t, x: x0, y: y0 };
+  }
+
   /* ---------- 分解本体 ---------- */
   async function run() {
     $('run').disabled = true; setExports(false);
@@ -376,7 +543,8 @@
         });
         const { data } = await worker.recognize(orig);
         await worker.terminate();
-        const lines = (data.lines || []).filter(l => l.confidence >= 55 && l.text.trim().length > 0);
+        const goodText = t => { const k = t.replace(/\s/g, ''); return k.length >= 2 && (k.match(/[぀-ヿ一-鿿A-Za-z0-9]/g) || []).length / k.length >= 0.7; };
+        const lines = (data.lines || []).filter(l => l.confidence >= 70 && goodText(l.text) && (l.bbox.y1 - l.bbox.y0) < H * 0.3);
         for (const l of lines) {
           const b = l.bbox, bh = b.y1 - b.y0;
           if (bh < 8) continue;
@@ -478,7 +646,7 @@
   };
 
   // テスト用フック
-  window.__layerTool = { inpaint, estimateColors, get layers() { return layers; } };
+  window.__layerTool = { addRegion, inpaint, estimateColors, get layers() { return layers; } };
 })();
 </script>
 </body>
